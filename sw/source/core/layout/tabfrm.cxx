@@ -22,7 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "lofixprobe.hxx"
+#include <lofixprobe.hxx>
 
 #include <bodyfrm.hxx>
 #include <pagefrm.hxx>
@@ -290,6 +290,18 @@ static SwRowFrame* lcl_InsertNewFollowFlowLine( SwTabFrame& rTab, const SwFrame&
     rTab.SetFollowFlowLine( true );
     SwRowFrame *pFollowFlowLine = new SwRowFrame(*rRow.GetTabLine(), &rTab, false );
     pFollowFlowLine->SetRowSpanLine( bRowSpanLine );
+    if (lofixprobe::on())
+    {
+        SwTabFrame* pLofixFollowTab = rTab.GetFollow();
+        std::fprintf(stderr,
+            "LOFIX FollowFlowLine row=%ld tab=%ld follow_tab=%ld src_row=%ld row_span=%d "
+            "tab_follow_flow=%d\n",
+            lofixprobe::rowIdOf(pFollowFlowLine), lofixprobe::tabIdFor(&rTab),
+            pLofixFollowTab ? lofixprobe::tabIdFor(pLofixFollowTab) : 0,
+            lofixprobe::rowIdOf(&rRow), bRowSpanLine ? 1 : 0,
+            rTab.HasFollowFlowLine() ? 1 : 0);
+        std::fflush(stderr);
+    }
     SwFrame* pFirstRow = rTab.GetFollow()->GetFirstNonHeadlineRow();
     pFollowFlowLine->InsertBefore( rTab.GetFollow(), pFirstRow );
     return pFollowFlowLine;
@@ -1231,7 +1243,15 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
     //They can definitely be invalid because of position changes of the table.
     SwRowFrame *pRow = static_cast<SwRowFrame*>(Lower());
     if( !pRow )
+    {
+        if (lofixprobe::on())
+        {
+            std::fprintf(stderr, "LOFIX Split EarlyExit id=%ld reason=no_row\n",
+                         lofixprobe::currentSplitId());
+            std::fflush(stderr);
+        }
         return bRet;
+    }
 
     const sal_uInt16 nRepeat = GetTable()->GetRowsToRepeat();
     sal_uInt16 nRowCount = 0;           // pRow currently points to the first row
@@ -1242,8 +1262,30 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
     SwTwips nRemainingSpaceForLastRow = aRectFnSet.YDiff(nCutPos, aRectFnSet.GetPrtTop(*this));
     nRemainingSpaceForLastRow -= aRectFnSet.GetBottomMargin(*this);
 
+    if (lofixprobe::on())
+    {
+        std::fprintf(stderr,
+            "LOFIX Split Space id=%ld cut=%ld top=%ld bottom_margin=%ld remain=%ld try=%d "
+            "rowkeep=%d\n",
+            lofixprobe::currentSplitId(), static_cast<long>(nCutPos),
+            static_cast<long>(aRectFnSet.GetPrtTop(*this)),
+            static_cast<long>(aRectFnSet.GetBottomMargin(*this)),
+            static_cast<long>(nRemainingSpaceForLastRow), bTryToSplit ? 1 : 0,
+            bTableRowKeep ? 1 : 0);
+        std::fflush(stderr);
+    }
+
     if (nRemainingSpaceForLastRow <= 0)
+    {
+        if (lofixprobe::on())
+        {
+            std::fprintf(stderr, "LOFIX Split EarlyExit id=%ld reason=no_space remain=%ld\n",
+                         lofixprobe::currentSplitId(),
+                         static_cast<long>(nRemainingSpaceForLastRow));
+            std::fflush(stderr);
+        }
         return false; // upper has no space for this table at all
+    }
 
     auto getRemainingAfter = [aRectFnSet, nAvailable = nRemainingSpaceForLastRow,
                               nFirstRowTop = aRectFnSet.GetTop(pRow->getFrameArea())](SwFrame* p)
@@ -1272,6 +1314,7 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
     const tools::Long nMaxHeight = lcl_GetMaxRowHeight(*this);
 
     bool bSplitRowAllowed = bTryToSplit && nRemainingSpaceForLastRow > 0;
+    const bool bLofixAfterInit = bSplitRowAllowed;
     if (bSplitRowAllowed && !pRow->IsRowSplitAllowed())
     {
         // A row larger than the entire page ought to be allowed to split regardless of setting,
@@ -1281,6 +1324,7 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
         else
             bSplitRowAllowed = false;
     }
+    const bool bLofixAfterAttr = bSplitRowAllowed;
     // #i29438#
     // #i26945# - Floating screen objects no longer forbid
     // a splitting of the table row.
@@ -1290,6 +1334,7 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
     {
         bSplitRowAllowed = false;
     }
+    const bool bLofixAfterSections = bSplitRowAllowed;
 
     SwFlyFrame* pFly = FindFlyFrame();
     if (bSplitRowAllowed && pFly && pFly->IsFlySplitAllowed())
@@ -1308,11 +1353,23 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
                 {
                     // Split of pRow is not allowed, no previous row, the current row doesn't fit:
                     // that's a failure, we'll have to move forward instead.
+                    if (lofixprobe::on())
+                    {
+                        std::fprintf(stderr,
+                            "LOFIX Split EarlyExit id=%ld reason=fly_min_height row=%ld "
+                            "remain=%ld min=%ld rowH=%ld\n",
+                            lofixprobe::currentSplitId(), lofixprobe::rowIdOf(pRow),
+                            static_cast<long>(nRemainingSpaceForLastRow),
+                            static_cast<long>(nMinHeight),
+                            static_cast<long>(aRectFnSet.GetHeight(pRow->getFrameArea())));
+                        std::fflush(stderr);
+                    }
                     return false;
                 }
             }
         }
     }
+    const bool bLofixAfterFly = bSplitRowAllowed;
 
     // #i29771#
     // To avoid loops, we do some checks before actually trying to split
@@ -1338,6 +1395,15 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
             if (!pFly || !pFly->IsFlySplitAllowed())
             {
                 m_pTable->SetRowsToRepeat(0);
+            }
+            if (lofixprobe::on())
+            {
+                std::fprintf(stderr,
+                    "LOFIX Split EarlyExit id=%ld reason=headline_no_room rows=%d repeat=%d "
+                    "row=%ld\n",
+                    lofixprobe::currentSplitId(), static_cast<int>(nRowCount),
+                    static_cast<int>(nRepeat), lofixprobe::rowIdOf(pRow));
+                std::fflush(stderr);
             }
             return false;
         }
@@ -1395,13 +1461,38 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
 
     // No more row to split or to move to follow table:
     if ( !pRow )
+    {
+        if (lofixprobe::on())
+        {
+            std::fprintf(stderr, "LOFIX Split EarlyExit id=%ld reason=no_row_after_keep\n",
+                         lofixprobe::currentSplitId());
+            std::fflush(stderr);
+        }
         return bRet;
+    }
 
     // We try to split the row if
     // - the attributes of the row are set accordingly and
     // - we are allowed to do so
     // - it should not be kept with the next row
-    bSplitRowAllowed = bSplitRowAllowed && (!bTableRowKeep || !pRow->ShouldRowKeepWithNext());
+    const bool bLofixRowKeepNext = pRow->ShouldRowKeepWithNext();
+    bSplitRowAllowed = bSplitRowAllowed && (!bTableRowKeep || !bLofixRowKeepNext);
+    if (lofixprobe::on())
+    {
+        std::fprintf(stderr,
+            "LOFIX Split Decision id=%ld remain=%ld maxH=%ld try=%d rowkeep=%d row=%ld "
+            "rowH=%ld rowSplitAllowed=%d rowSpan=%d keepNextRow=%d omitHeadline=%d "
+            "after_init=%d after_attr=%d after_sections=%d after_fly=%d final=%d\n",
+            lofixprobe::currentSplitId(), static_cast<long>(nRemainingSpaceForLastRow),
+            static_cast<long>(nMaxHeight), bTryToSplit ? 1 : 0, bTableRowKeep ? 1 : 0,
+            lofixprobe::rowIdOf(pRow),
+            static_cast<long>(aRectFnSet.GetHeight(pRow->getFrameArea())),
+            pRow->IsRowSplitAllowed() ? 1 : 0, pRow->IsRowSpanLine() ? 1 : 0,
+            bKeepNextRow ? 1 : 0, bOmitHeadline ? 1 : 0, bLofixAfterInit ? 1 : 0,
+            bLofixAfterAttr ? 1 : 0, bLofixAfterSections ? 1 : 0, bLofixAfterFly ? 1 : 0,
+            bSplitRowAllowed ? 1 : 0);
+        std::fflush(stderr);
+    }
 
     // Adjust pRow according to the keep-with-next attribute:
     if ( !bSplitRowAllowed && bTableRowKeep )
@@ -1454,6 +1545,12 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
             // The first row cannot be handed to a follow: that would leave this table without rows.
             // It can still get the space of a footnote, and then it is not cut off here after all.
             rRescue = lcl_GetFootnoteRescue(*pRow);
+            if (lofixprobe::on())
+            {
+                std::fprintf(stderr, "LOFIX Split EarlyExit id=%ld reason=first_row row=%ld\n",
+                             lofixprobe::currentSplitId(), lofixprobe::rowIdOf(pRow));
+                std::fflush(stderr);
+            }
             return false;
         }
 
@@ -1468,6 +1565,14 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
         {
             if (pTmpRow)
                 rRescue = lcl_GetFootnoteRescue(*pRow);
+            if (lofixprobe::on())
+            {
+                std::fprintf(stderr,
+                    "LOFIX Split EarlyExit id=%ld reason=spanned_first row=%ld tmp=%ld\n",
+                    lofixprobe::currentSplitId(), lofixprobe::rowIdOf(pRow),
+                    lofixprobe::rowIdOf(pTmpRow));
+                std::fflush(stderr);
+            }
             return false;
         }
     }
@@ -1586,6 +1691,19 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
         // new follow flow line for last row of master table
         if ( pLastRow )
             pFollowRow = lcl_InsertNewFollowFlowLine( *this, *pLastRow, true );
+    }
+
+    if (lofixprobe::on())
+    {
+        const char* pLofixPath = bSplitRowAllowed ? "split_row"
+                                                 : (pLastRow ? "move_row_span" : "move_row");
+        std::fprintf(stderr,
+            "LOFIX Split Branch id=%ld path=%s split_allowed=%d last_row=%ld follow_row=%ld "
+            "follow_tab=%ld new_follow=%d\n",
+            lofixprobe::currentSplitId(), pLofixPath, bSplitRowAllowed ? 1 : 0,
+            lofixprobe::rowIdOf(pLastRow), lofixprobe::rowIdOf(pFollowRow),
+            lofixprobe::tabIdFor(pFoll), bNewFollow ? 1 : 0);
+        std::fflush(stderr);
     }
 
     const SwTwips nShrink = lcl_GetHeightOfRows(pRow, std::numeric_limits<tools::Long>::max());
@@ -5529,12 +5647,16 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
             // for its former upper.
             // Regardless of whether it will be pasted back, or destroyed, currently it's not
             // part of layout, and its height does not count
-            lofixprobe::noteIsAnFollow();
-            if (pCurTab && pCurTab->IsAnFollow(pTab))
+            if (pCurTab)
             {
-                // The found row frame belongs to a table frame that precedes
-                // (above) this one in chain. So, include it in the sum
-                nResult += aRectFnSet.GetHeight(pCurRow->getFrameArea());
+                lofixprobe::noteIsAnFollow();
+                lofixprobe::IsAnFollowTraceScope aLofixAnFollowTrace;
+                if (pCurTab->IsAnFollow(pTab))
+                {
+                    // The found row frame belongs to a table frame that precedes
+                    // (above) this one in chain. So, include it in the sum
+                    nResult += aRectFnSet.GetHeight(pCurRow->getFrameArea());
+                }
             }
         }
     }

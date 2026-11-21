@@ -18,6 +18,7 @@
  */
 
 #include <config_wasm_strip.h>
+#include <cstdio>
 
 #include <hintids.hxx>
 #include <hints.hxx>
@@ -58,6 +59,7 @@
 #include <sectfrm.hxx>
 #include "itrform2.hxx"
 #include "widorp.hxx"
+#include <lofixprobe.hxx>
 #include <fntcache.hxx>
 #include <SwGrammarMarkUp.hxx>
 #include <lineinfo.hxx>
@@ -3512,8 +3514,41 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
             "SwTextFrame::WouldFit with swapped frame" );
     SwRectFnSet aRectFnSet(*this);
 
+    // Probe v4.2: only the fly-only paragraph of the failing document is
+    // traced, identified the same way the WouldFit patch identifies it.
+    bool bLofixTarget = false;
+    long nLofixTextId = 0;
+    if (lofixprobe::on())
+    {
+        const OUString& rLofixText = GetText();
+        if (rLofixText.getLength() == 1 && rLofixText[0] == CH_TXTATR_BREAKWORD)
+        {
+            std::pair<SwTextNode*, sal_Int32> const aLofixPos(MapViewToModel(TextFrameIndex(0)));
+            if (aLofixPos.first
+                && aLofixPos.first->GetTextAttrForCharAt(aLofixPos.second, RES_TXTATR_FLYCNT))
+            {
+                bLofixTarget = true;
+                nLofixTextId = lofixprobe::textIdFor(this);
+            }
+        }
+    }
+    auto lofixLog = [&](const char* pWhat, int nRet, long nLineH, int nInside, int nKeep) {
+        if (!bLofixTarget)
+            return;
+        std::fprintf(stderr,
+            "LOFIX WouldFit %s frame=%ld bTst=%d bMoveBwd=%d maxH=%ld split=%d ret=%d "
+            "lineH=%ld inside=%d keep=%d\n",
+            pWhat, nLofixTextId, bTst ? 1 : 0, bMoveBwd ? 1 : 0,
+            static_cast<long>(rMaxHeight), bSplit ? 1 : 0, nRet, nLineH, nInside, nKeep);
+        std::fflush(stderr);
+    };
+    lofixLog("Enter", -1, -1, -1, -1);
+
     if( IsLocked() )
+    {
+        lofixLog("Locked", 0, -1, -1, -1);
         return false;
+    }
 
     // it can happen that the IdleCollector removed the cached information
     if( !IsEmpty() )
@@ -3528,10 +3563,14 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
         bSplit = false;
         SwTwips nHeight = aRectFnSet.IsVert() ? getFramePrintArea().SSize().Width() : getFramePrintArea().SSize().Height();
         if( rMaxHeight < nHeight )
+        {
+            lofixLog("EmptyNoFit", 0, static_cast<long>(nHeight), -1, -1);
             return false;
+        }
         else
         {
             rMaxHeight -= nHeight;
+            lofixLog("EmptyFits", 1, static_cast<long>(nHeight), -1, -1);
             return true;
         }
     }
@@ -3540,7 +3579,10 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
     // We return true in order to be reformatted on the new Page
     OSL_ENSURE( HasPara() || IsHiddenNow(), "WouldFit: GetFormatted() and then !HasPara()" );
     if( !HasPara() || ( !aRectFnSet.GetHeight(getFrameArea()) && IsHiddenNow() ) )
+    {
+        lofixLog("NoPara", 1, -1, -1, -1);
         return true;
+    }
 
     // Because the Orphan flag only exists for a short moment, we also check
     // whether the Framesize is set to very huge by CalcPreps, in order to
@@ -3569,10 +3611,16 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
                          !pFoll->getFrameArea().Height() ) )
                     pFoll = pFoll->GetFollow();
                 if( pFoll )
+                {
+                    lofixLog("WidowFollow", 0, -1, -1, -1);
                     return false;
+                }
             }
             else
+            {
+                lofixLog("Widow", 0, -1, -1, -1);
                 return false;
+            }
         }
     }
 
@@ -3587,9 +3635,11 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
 
     aLine.Bottom();
     // is breaking necessary?
-    bSplit = !aFrameBreak.IsInside( aLine );
+    const bool bLofixInside = aFrameBreak.IsInside( aLine );
+    bSplit = !bLofixInside;
+    const bool bLofixKeep = aFrameBreak.IsKeepAlways();
     if ( bSplit )
-        bRet = !aFrameBreak.IsKeepAlways() && aFrameBreak.WouldFit(aLine, rMaxHeight, bTst, bMoveBwd);
+        bRet = !bLofixKeep && aFrameBreak.WouldFit(aLine, rMaxHeight, bTst, bMoveBwd);
     else
     {
         // we need the total height including the current line
@@ -3599,6 +3649,8 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
             rMaxHeight -= aLine.GetLineHeight();
         } while ( aLine.Next() );
     }
+    lofixLog("Exit", bRet ? 1 : 0, static_cast<long>(aLine.GetLineHeight()),
+             bLofixInside ? 1 : 0, bLofixKeep ? 1 : 0);
 
     return bRet;
 }

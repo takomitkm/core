@@ -1,28 +1,24 @@
-/* LOFIX PROBE ONLY - NOT FOR UPSTREAM. v4.1.
+/* LOFIX PROBE ONLY - NOT FOR UPSTREAM. v4.2.
  *
  * Diagnostic instrumentation for the non-converging Writer table layout
  * observed with an oversized as-character image in a table cell.
  *
  * Enabled at runtime via LOFIX_TRACE_SPLIT.
  *
- * Header-only (inline functions with function-local statics) so no build-system
- * change is needed.
+ * v4.2 = v4.1 counters plus the decision-point data:
+ *   - SwTextFrame::WouldFit logs, for the fly-only paragraph only, the input
+ *     and output maximum height, line height, IsInside() result,
+ *     IsKeepAlways() and the return value, on every return path;
+ *   - SwTabFrame::Split logs the row/space inputs, every intermediate
+ *     bSplitRowAllowed value, the keep-next/omit-headline flags, and which of
+ *     the three branches it took;
+ *   - lcl_InsertNewFollowFlowLine logs master/follow tab, source row and
+ *     row-span flag, so the structural relation is recorded at creation;
+ *   - IsAnFollow counts are only bumped for real calls, and its follow-chain
+ *     steps are measured for calls made from the target scan only.
  *
- * v4.1 = v4 plus three corrections:
- *   - iterator visits and IsAnFollow() calls are counted separately; the
- *     IsAnFollow() counter is only bumped where the call really happens;
- *   - all Tab/Row creation and destruction events are printed immediately, so
- *     a SIGKILL (timeout) cannot lose the life cycle of the last scopes;
- *   - row follow state (IsFollowFlowRow, GetFollowRow) is printed by the
- *     caller, which knows the concrete type, together with the owning tab and
- *     the active Split.
- *
- * Scope model:
- *   MakeAllScope  - one per SwTabFrame::MakeAll call, counts Split calls made
- *                   while active, so "one MakeAll splitting N times" and
- *                   "outer code calling MakeAll N times" can be told apart.
- *   SplitScope    - one per SwTabFrame::Split call.
- *   Both count, separately, SwIterator visits and real IsAnFollow() calls.
+ * Scope model: MakeAllScope (one per SwTabFrame::MakeAll) and SplitScope
+ * (one per SwTabFrame::Split) carry the counters.
  */
 #pragma once
 
@@ -48,6 +44,7 @@ struct State
     long nextRowId = 0;
     long nextSplitId = 0;
     long nextMakeAllId = 0;
+    long nextTextId = 0;
 
     long tabCreated = 0;
     long tabDestroyed = 0;
@@ -62,8 +59,15 @@ struct State
     long collapseCalls = 0;
     int maxCollapseDepth = 0;
 
+    long anFollowCallsTotal = 0;
+    long anFollowStepsTotal = 0;
+    long anFollowMaxSteps = 0;
+    long anFollowTrueTotal = 0;
+    int anFollowTraceDepth = 0;
+
     std::unordered_map<void const*, long> tabIds;
     std::unordered_map<void const*, long> rowIds;
+    std::unordered_map<void const*, long> textIds;
 
     std::vector<SplitScope*> splitStack;
     std::vector<MakeAllScope*> makeAllStack;
@@ -86,6 +90,9 @@ struct MakeAllScope
     long splitCalls = 0;
     long iteratorVisits = 0;
     long isAnFollowCalls = 0;
+    long isAnFollowSteps = 0;
+    long maxIsAnFollowSteps = 0;
+    long isAnFollowTrue = 0;
     long rowCreatedAtEnter = 0;
     long rowDestroyedAtEnter = 0;
     long tabCreatedAtEnter = 0;
@@ -111,6 +118,9 @@ struct SplitScope
     long shrinkExclusive = 0;
     long iteratorVisits = 0;
     long isAnFollowCalls = 0;
+    long isAnFollowSteps = 0;
+    long maxIsAnFollowSteps = 0;
+    long isAnFollowTrue = 0;
     int maxShrinkDepth = 0;
     int maxCollapseDepth = 0;
     long rowCreated = 0;
@@ -137,6 +147,28 @@ struct DepthGuard
     DepthGuard& operator=(DepthGuard const&) = delete;
 };
 
+/// Marks IsAnFollow() calls that belong to the target scan, so chain steps are
+/// only attributed to that hotspot.
+struct IsAnFollowTraceScope
+{
+    bool traced;
+    explicit IsAnFollowTraceScope()
+        : traced(state().enabled)
+    {
+        if (traced)
+            ++state().anFollowTraceDepth;
+    }
+    ~IsAnFollowTraceScope()
+    {
+        if (traced)
+            --state().anFollowTraceDepth;
+    }
+    IsAnFollowTraceScope(IsAnFollowTraceScope const&) = delete;
+    IsAnFollowTraceScope& operator=(IsAnFollowTraceScope const&) = delete;
+};
+
+inline bool isAnFollowTraceActive() { return state().anFollowTraceDepth > 0; }
+
 inline long tabIdFor(void const* p)
 {
     State& rS = state();
@@ -145,6 +177,17 @@ inline long tabIdFor(void const* p)
         return it->second;
     long nId = ++rS.nextTabId;
     rS.tabIds.emplace(p, nId);
+    return nId;
+}
+
+inline long textIdFor(void const* p)
+{
+    State& rS = state();
+    auto it = rS.textIds.find(p);
+    if (it != rS.textIds.end())
+        return it->second;
+    long nId = ++rS.nextTextId;
+    rS.textIds.emplace(p, nId);
     return nId;
 }
 
@@ -226,6 +269,12 @@ inline SplitScope* currentSplit()
     return rS.splitStack.empty() ? nullptr : rS.splitStack.back();
 }
 
+inline long currentSplitId()
+{
+    SplitScope* p = currentSplit();
+    return p ? p->splitId : 0;
+}
+
 inline MakeAllScope* currentMakeAll()
 {
     State& rS = state();
@@ -263,11 +312,12 @@ inline SplitScope::~SplitScope()
     State& rS = state();
     std::fprintf(stderr,
         "LOFIX Split Exit id=%ld tab_id=%ld makeall=%ld shrink_incl=%ld shrink_excl=%ld "
-        "iter=%ld isanfollow=%ld max_shrink_depth=%d max_collapse_depth=%d row_created=%ld "
+        "iter=%ld isanfollow=%ld isanfollow_steps=%ld max_isanfollow_steps=%ld "
+        "isanfollow_true=%ld max_shrink_depth=%d max_collapse_depth=%d row_created=%ld "
         "row_live=%ld row_peak=%ld tab_live=%ld tab_peak=%ld\n",
         splitId, tabId, makeAllId, shrinkInclusive, shrinkExclusive, iteratorVisits,
-        isAnFollowCalls, maxShrinkDepth, maxCollapseDepth, rowCreated, rS.rowLive,
-        rS.rowPeakLive, rS.tabLive, rS.tabPeakLive);
+        isAnFollowCalls, isAnFollowSteps, maxIsAnFollowSteps, isAnFollowTrue, maxShrinkDepth,
+        maxCollapseDepth, rowCreated, rS.rowLive, rS.rowPeakLive, rS.tabLive, rS.tabPeakLive);
     std::fflush(stderr);
     if (!rS.splitStack.empty() && rS.splitStack.back() == this)
         rS.splitStack.pop_back();
@@ -300,12 +350,14 @@ inline MakeAllScope::~MakeAllScope()
     State& rS = state();
     std::fprintf(stderr,
         "LOFIX MakeAll Exit id=%ld tab_id=%ld split_calls=%ld iter=%ld isanfollow=%ld "
+        "isanfollow_steps=%ld max_isanfollow_steps=%ld isanfollow_true=%ld "
         "row_created=%ld row_destroyed=%ld tab_created=%ld tab_destroyed=%ld "
         "row_live=%ld row_peak=%ld tab_live=%ld tab_peak=%ld\n",
-        makeAllId, tabId, splitCalls, iteratorVisits, isAnFollowCalls,
-        rS.rowCreated - rowCreatedAtEnter, rS.rowDestroyed - rowDestroyedAtEnter,
-        rS.tabCreated - tabCreatedAtEnter, rS.tabDestroyed - tabDestroyedAtEnter, rS.rowLive,
-        rS.rowPeakLive, rS.tabLive, rS.tabPeakLive);
+        makeAllId, tabId, splitCalls, iteratorVisits, isAnFollowCalls, isAnFollowSteps,
+        maxIsAnFollowSteps, isAnFollowTrue, rS.rowCreated - rowCreatedAtEnter,
+        rS.rowDestroyed - rowDestroyedAtEnter, rS.tabCreated - tabCreatedAtEnter,
+        rS.tabDestroyed - tabDestroyedAtEnter, rS.rowLive, rS.rowPeakLive, rS.tabLive,
+        rS.tabPeakLive);
     std::fflush(stderr);
     if (!rS.makeAllStack.empty() && rS.makeAllStack.back() == this)
         rS.makeAllStack.pop_back();
@@ -363,16 +415,41 @@ inline void noteIteratorVisit()
         ++p->iteratorVisits;
 }
 
-/// One real IsAnFollow() call inside that iterator loop.
+/// One real IsAnFollow() call (the callee is non-null).
 inline void noteIsAnFollow()
 {
     State& rS = state();
     if (!rS.enabled)
         return;
+    ++rS.anFollowCallsTotal;
     if (SplitScope* p = currentSplit())
         ++p->isAnFollowCalls;
     if (MakeAllScope* p = currentMakeAll())
         ++p->isAnFollowCalls;
+}
+
+/// One traced IsAnFollow() call: number of GetFollow() hops walked and result.
+inline void noteIsAnFollowWalk(long nSteps, bool bFound)
+{
+    State& rS = state();
+    if (!rS.enabled)
+        return;
+    ++rS.anFollowStepsTotal;
+    if (bFound)
+        ++rS.anFollowTrueTotal;
+    rS.anFollowMaxSteps = std::max(rS.anFollowMaxSteps, nSteps);
+    if (SplitScope* p = currentSplit())
+    {
+        p->isAnFollowSteps += nSteps;
+        p->isAnFollowTrue += bFound ? 1 : 0;
+        p->maxIsAnFollowSteps = std::max(p->maxIsAnFollowSteps, nSteps);
+    }
+    if (MakeAllScope* p = currentMakeAll())
+    {
+        p->isAnFollowSteps += nSteps;
+        p->isAnFollowTrue += bFound ? 1 : 0;
+        p->maxIsAnFollowSteps = std::max(p->maxIsAnFollowSteps, nSteps);
+    }
 }
 
 } // namespace lofixprobe

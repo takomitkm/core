@@ -31,6 +31,7 @@
 #include <viewopt.hxx>
 #include <frmatr.hxx>
 #include <frmtool.hxx>
+#include <lofixprobe.hxx>
 #include <IDocumentFieldsAccess.hxx>
 #include <editeng/formatbreakitem.hxx>
 #include <editeng/keepitem.hxx>
@@ -794,12 +795,21 @@ void SwFlowFrame::MoveSubTree( SwLayoutFrame* pParent, SwFrame* pSibling )
 
 bool SwFlowFrame::IsAnFollow( const SwFlowFrame *pAssumed ) const
 {
+    const bool bLofixTrace = lofixprobe::on() && lofixprobe::isAnFollowTraceActive();
+    long nLofixSteps = 0;
     const SwFlowFrame *pFoll = this;
     do
-    {   if ( pAssumed == pFoll )
+    {   ++nLofixSteps;
+        if ( pAssumed == pFoll )
+        {
+            if ( bLofixTrace )
+                lofixprobe::noteIsAnFollowWalk( nLofixSteps, true );
             return true;
+        }
         pFoll = pFoll->GetFollow();
     } while ( pFoll );
+    if ( bLofixTrace )
+        lofixprobe::noteIsAnFollowWalk( nLofixSteps, false );
     return false;
 }
 
