@@ -1,0 +1,75 @@
+name: sw follow-chain probe (source counters, no fix applied)
+
+on:
+  push:
+    branches:
+      - instr-probe
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get build-dep -y libreoffice
+          sudo apt-get install -y ccache gperf flex bison pkg-config libxml2-utils
+
+      - name: Prepare ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: sw-wouldfit-${{ runner.os }}
+          max-size: 4G
+
+      - name: Configure
+        run: |
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          ./autogen.sh --disable-gui --without-java --disable-python --disable-odk \
+            --without-doxygen --disable-report-builder \
+            --disable-gstreamer-1-0 --without-myspell-dicts --disable-lotuswordpro \
+            --disable-firebird-sdbc --disable-extensions --disable-opencl \
+            --disable-scripting --with-parallelism=$(nproc)
+
+      - name: Full build (upstream + probe counters, no fix)
+        run: make -j$(nproc)
+
+      - name: Run conversion with follow-chain counters
+        run: |
+          mkdir -p out
+          set +e
+          LOFIX_TRACE_FOLLOW=1 timeout -k 15 180 instdir/program/soffice --headless \
+            --convert-to pdf --outdir out sw/qa/core/layout/data/oversized-as-char-fly-grid.docx \
+            2> trace.txt
+          rc=$?
+          set -e
+          echo "conversion rc=$rc (124=timeout, 134=SIGABRT from our own abort guard)"
+          wc -l trace.txt
+          echo "--- LOFIX lines: $(grep -c LOFIX trace.txt || true)"
+          echo "--- counters (Split / ShrinkFrame):"
+          grep -E 'LOFIX (TabFrame::Split|RowFrame::ShrinkFrame)' trace.txt | tail -10 || true
+          echo "--- IsAnFollow progress lines:"
+          grep -E 'LOFIX IsAnFollow' trace.txt | head -20 || true
+          echo "--- distinct follow pointers seen (cycle detection aid):"
+          grep -oE 'foll=0x[0-9a-f]+' trace.txt | sort -u | wc -l || true
+          echo "--- tail:"
+          tail -20 trace.txt || true
+          if ! grep -q LOFIX trace.txt; then
+            echo "::error::instrumentation never reached - do not read this as 'no loop'"
+            exit 1
+          fi
+
+      - name: Upload probe trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: follow-probe-trace
+          path: |
+            trace.txt
+            out/

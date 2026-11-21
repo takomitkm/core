@@ -1164,6 +1164,12 @@ static SwFootnoteRescue lcl_GetFootnoteRescue(const SwRowFrame& rRow)
 bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKeep,
                        bool& rIsFootnoteGrowth, SwFootnoteRescue& rRescue)
 {
+    // LOFIX PROBE ONLY - entry counter.
+    static const bool bTraceSplit = nullptr != std::getenv("LOFIX_TRACE_FOLLOW");
+    static long nSplitCalls = 0;
+    if ( bTraceSplit && 0 == ( ++nSplitCalls % 500 ) )
+        std::fprintf( stderr, "LOFIX TabFrame::Split calls=%ld\n", nSplitCalls );
+
     bool bRet = true;
 
     SwRectFnSet aRectFnSet(*this);
@@ -5817,6 +5823,12 @@ SwTwips SwRowFrame::GrowFrame(SwTwips nDist, SwResizeLimitReason& reason, bool b
 
 SwTwips SwRowFrame::ShrinkFrame( SwTwips nDist, bool bTst, bool bInfo )
 {
+    // LOFIX PROBE ONLY - entry counter.
+    static const bool bTraceShrink = nullptr != std::getenv("LOFIX_TRACE_FOLLOW");
+    static long nShrinkCalls = 0;
+    if ( bTraceShrink && 0 == ( ++nShrinkCalls % 500 ) )
+        std::fprintf( stderr, "LOFIX RowFrame::ShrinkFrame calls=%ld\n", nShrinkCalls );
+
     SwRectFnSet aRectFnSet(*this);
     if( HasFixSize() )
     {

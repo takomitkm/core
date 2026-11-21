@@ -18,6 +18,8 @@
  */
 
 #include <sal/config.h>
+#include <cstdio>
+#include <cstdlib>
 #include <sal/log.hxx>
 #include <osl/diagnose.h>
 #include <svx/svdobj.hxx>
@@ -794,11 +796,37 @@ void SwFlowFrame::MoveSubTree( SwLayoutFrame* pParent, SwFrame* pSibling )
 
 bool SwFlowFrame::IsAnFollow( const SwFlowFrame *pAssumed ) const
 {
+    // LOFIX PROBE ONLY - not for upstream. Guarded by LOFIX_TRACE_FOLLOW.
+    static const bool bTrace = nullptr != std::getenv("LOFIX_TRACE_FOLLOW");
+    long nIter = 0;
     const SwFlowFrame *pFoll = this;
     do
     {   if ( pAssumed == pFoll )
             return true;
         pFoll = pFoll->GetFollow();
+        if ( bTrace )
+        {
+            ++nIter;
+            if ( 0 == ( nIter % 10000 ) )
+            {
+                std::fprintf( stderr,
+                    "LOFIX IsAnFollow iter=%ld this=%p assumed=%p foll=%p\n",
+                    nIter, static_cast<const void*>(this),
+                    static_cast<const void*>(pAssumed),
+                    static_cast<const void*>(pFoll) );
+                std::fflush( stderr );
+            }
+            if ( nIter > 500000 )
+            {
+                std::fprintf( stderr,
+                    "LOFIX IsAnFollow NONTERMINATING iter=%ld this=%p assumed=%p foll=%p\n",
+                    nIter, static_cast<const void*>(this),
+                    static_cast<const void*>(pAssumed),
+                    static_cast<const void*>(pFoll) );
+                std::fflush( stderr );
+                std::abort();
+            }
+        }
     } while ( pFoll );
     return false;
 }
