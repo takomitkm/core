@@ -19,6 +19,11 @@
 
 #include <config_wasm_strip.h>
 
+#include <cstdio>
+#include <cstdlib>
+
+#include "lofixprobe.hxx"
+
 #include <bodyfrm.hxx>
 #include <pagefrm.hxx>
 #include <rootfrm.hxx>
@@ -370,6 +375,9 @@ static void lcl_InvalidateLowerObjs( SwLayoutFrame& _rLayoutFrame,
 // Local helper function to shrink all lowers of pRow to 0 height
 static void lcl_ShrinkCellsAndAllContent( SwRowFrame& rRow )
 {
+    static thread_local int tLofixCollapseDepth = 0;
+    lofixprobe::DepthGuard aLofixCollapseDepth( tLofixCollapseDepth );
+    lofixprobe::noteCollapse( tLofixCollapseDepth );
     SwCellFrame* pCurrMasterCell = static_cast<SwCellFrame*>(rRow.Lower());
     SwRectFnSet aRectFnSet(*pCurrMasterCell);
 
@@ -1164,11 +1172,7 @@ static SwFootnoteRescue lcl_GetFootnoteRescue(const SwRowFrame& rRow)
 bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKeep,
                        bool& rIsFootnoteGrowth, SwFootnoteRescue& rRescue)
 {
-    // LOFIX PROBE ONLY - entry counter.
-    static const bool bTraceSplit = nullptr != std::getenv("LOFIX_TRACE_FOLLOW");
-    static long nSplitCalls = 0;
-    if ( bTraceSplit && 0 == ( ++nSplitCalls % 500 ) )
-        std::fprintf( stderr, "LOFIX TabFrame::Split calls=%ld\n", nSplitCalls );
+    lofixprobe::Scope aLofixSplitScope( this );
 
     bool bRet = true;
 
@@ -4811,6 +4815,8 @@ SwRowFrame::SwRowFrame(const SwTableLine &rLine, SwFrame* pSib, bool bInsertCont
     , m_bForceRowSplitAllowed( false )
     , m_bIsInSplit( false )
 {
+    lofixprobe::noteRowCreated();
+
     mnFrameType = SwFrameType::Row;
 
     //Create the boxes and insert them.
@@ -4846,6 +4852,7 @@ void SwRowFrame::DestroyImpl()
 
 SwRowFrame::~SwRowFrame()
 {
+    lofixprobe::noteRowDestroyed();
 }
 
 void SwRowFrame::RegistFlys( SwPageFrame *pPage )
@@ -5823,11 +5830,9 @@ SwTwips SwRowFrame::GrowFrame(SwTwips nDist, SwResizeLimitReason& reason, bool b
 
 SwTwips SwRowFrame::ShrinkFrame( SwTwips nDist, bool bTst, bool bInfo )
 {
-    // LOFIX PROBE ONLY - entry counter.
-    static const bool bTraceShrink = nullptr != std::getenv("LOFIX_TRACE_FOLLOW");
-    static long nShrinkCalls = 0;
-    if ( bTraceShrink && 0 == ( ++nShrinkCalls % 500 ) )
-        std::fprintf( stderr, "LOFIX RowFrame::ShrinkFrame calls=%ld\n", nShrinkCalls );
+    static thread_local int tLofixShrinkDepth = 0;
+    lofixprobe::DepthGuard aLofixShrinkDepth( tLofixShrinkDepth );
+    lofixprobe::noteShrink( tLofixShrinkDepth );
 
     SwRectFnSet aRectFnSet(*this);
     if( HasFixSize() )
