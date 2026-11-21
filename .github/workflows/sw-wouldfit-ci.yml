@@ -1,0 +1,119 @@
+name: sw WouldFit as-char fly fix CI
+
+on:
+  push:
+    branches:
+      - fix/aschar-fly-wouldfit
+  workflow_dispatch:
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Enable deb-src and install build dependencies
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get build-dep -y libreoffice
+          sudo apt-get install -y ccache gperf flex bison pkg-config libxml2-utils fonts-noto-cjk fonts-liberation gdb
+
+      - name: Prepare ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: sw-wouldfit-${{ runner.os }}
+          max-size: 4G
+
+      - name: Configure
+        run: |
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          ./autogen.sh --disable-gui --without-java --disable-python --disable-odk \
+            --without-doxygen --disable-report-builder \
+            --disable-gstreamer-1-0 --without-myspell-dicts --disable-lotuswordpro \
+            --disable-firebird-sdbc --disable-extensions --disable-opencl \
+            --disable-scripting --with-parallelism=$(nproc)
+
+      - name: Full build with the fix applied
+        run: make -j$(nproc)
+
+      - name: Baseline conversion without the fix - expected to hang
+        run: |
+          cp sw/source/core/text/txtfrm.cxx /tmp/fixed_txtfrm.cxx
+          git checkout HEAD^ -- sw/source/core/text/txtfrm.cxx
+          make sw -j$(nproc)
+          mkdir -p out1
+          instdir/program/soffice --headless --convert-to pdf --outdir out1 sw/qa/core/layout/data/oversized-as-char-fly-grid.docx >/dev/null 2>&1 &
+          sleep 30
+          if compgen -G "out1/*.pdf" > /dev/null; then
+            echo "::error::baseline produced a PDF within 30s - repro does not reproduce on Linux"
+            pkill -9 -f soffice.bin 2>/dev/null
+            exit 1
+          fi
+          pid=$(pgrep -f 'soffice.bin' | head -1)
+          if [ -z "$pid" ]; then
+            echo "::error::no soffice.bin process found - nothing to sample"
+            exit 1
+          fi
+          echo "baseline still running after 30s (hang confirmed), pid $pid - sampling"
+          mkdir -p tr1
+          # Ubuntu 24.04 defaults to kernel.yama.ptrace_scope=1, which only
+          # allows attaching to own children; soffice.bin is a sibling here.
+          ptrace_orig=$(cat /proc/sys/kernel/yama/ptrace_scope)
+          if [ "$ptrace_orig" != "0" ]; then
+            sudo sh -c 'echo 0 > /proc/sys/kernel/yama/ptrace_scope'
+          fi
+          echo "ptrace_scope now $(cat /proc/sys/kernel/yama/ptrace_scope) (was $ptrace_orig)"
+          for k in 1 2 3; do
+            timeout -k 10 60 gdb -p "$pid" -batch -ex 'thread apply all bt 30' > "tr1/bt_$k.txt" 2>&1 || true
+            sleep 3
+          done
+          # restore the hardening before the rest of the job runs
+          sudo sh -c "echo $ptrace_orig > /proc/sys/kernel/yama/ptrace_scope" || true
+          echo "ptrace_scope restored: $(cat /proc/sys/kernel/yama/ptrace_scope)"
+          kill -9 "$pid" 2>/dev/null
+          pkill -9 -f soffice.bin 2>/dev/null
+          for f in tr1/bt_1.txt tr1/bt_2.txt tr1/bt_3.txt; do
+            if ! grep -q '^#0 ' "$f"; then
+              echo "::error::Missing backtrace in $f"
+              cat "$f"
+              exit 1
+            fi
+          done
+          cat tr1/bt_*.txt | grep -E '^#[0-9]+ ' | sed -E 's/^#[0-9]+ +0x[0-9a-f]+ in //' | sed -E 's/[(].*//' | sort | uniq -c | sort -rn | head -40 > tr1/frame_histogram.txt
+          if [ ! -s tr1/frame_histogram.txt ]; then
+            echo "::error::Frame histogram is empty"
+            exit 1
+          fi
+          echo "--- recurring frames:"
+          cat tr1/frame_histogram.txt
+
+      - name: Apply fix and rebuild
+        run: |
+          cp /tmp/fixed_txtfrm.cxx sw/source/core/text/txtfrm.cxx
+          make sw -j$(nproc)
+
+      - name: Fixed conversion must succeed
+        run: |
+          mkdir -p out2
+          timeout -k 15 300 instdir/program/soffice --headless --convert-to pdf \
+            --outdir out2 sw/qa/core/layout/data/oversized-as-char-fly-grid.docx
+          test -f out2/oversized-as-char-fly-grid.pdf
+
+      - name: Run sw_core_layout test suite
+        run: make CppunitTest_sw_core_layout
+
+      - name: Upload converted pdf artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversion-outputs
+          path: |
+            out1/
+            out2/
+            tr1/

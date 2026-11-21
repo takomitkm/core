@@ -1032,6 +1032,19 @@ CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testNewFollowTextFlowWrapInBackground)
     CPPUNIT_ASSERT_LESS(static_cast<sal_Int32>(1000), nCellHeight);
 }
 
+CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testOversizedAsCharFlyGridNoHang)
+{
+    // The document has a paragraph that consists only of an as-char fly that
+    // is taller than the text body (docGrid lines + footer). Without the
+    // accompanying fix, WouldFit() kept promising a split for this
+    // unsplittable paragraph and layout never converged (100% CPU, hang).
+    // Loading the document must terminate.
+    createSwDoc("oversized-as-char-fly-grid.docx");
+    // The fly overflows the body area of its page; the document still lays
+    // out to at least one page.
+    CPPUNIT_ASSERT(getPages() >= 1);
+}
+
 CPPUNIT_PLUGIN_IMPLEMENT();
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
