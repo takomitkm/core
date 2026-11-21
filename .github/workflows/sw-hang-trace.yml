@@ -1,4 +1,4 @@
-name: sw probe v4 (MakeAll vs Split, instance ids, iterator cost; no fix applied)
+name: sw probe v4.1 (MakeAll/Split split, instance life cycle, iterator cost)
 
 on:
   push:
@@ -37,10 +37,10 @@ jobs:
             --disable-firebird-sdbc --disable-extensions --disable-opencl \
             --disable-scripting --with-parallelism=$(nproc)
 
-      - name: Full build (upstream + v4 probe, no fix)
+      - name: Full build (upstream + v4.1 probe, no fix)
         run: make -j$(nproc)
 
-      - name: Run conversion with v4 counters
+      - name: Run conversion with v4.1 counters
         run: |
           mkdir -p out
           set +e
@@ -50,12 +50,24 @@ jobs:
           echo "conversion rc=$rc (124=timeout)"
           wc -l trace.txt
           echo "=== counts"
-          echo "MakeAll Enter: $(grep -c 'LOFIX MakeAll Enter' trace.txt || true)"
-          echo "MakeAll Exit:  $(grep -c 'LOFIX MakeAll Exit' trace.txt || true)"
-          echo "Split Enter:   $(grep -c 'LOFIX Split Enter' trace.txt || true)"
-          echo "Split Exit:    $(grep -c 'LOFIX Split Exit' trace.txt || true)"
-          echo "Row Destroyed: $(grep -c 'LOFIX Row Destroyed' trace.txt || true)"
-          echo "Collapse:      $(grep -c 'LOFIX Collapse' trace.txt || true)"
+          for pat in "LOFIX MakeAll Enter" "LOFIX MakeAll Exit" "LOFIX Split Enter" "LOFIX Split Exit" "LOFIX Tab Created" "LOFIX Tab Destroyed" "LOFIX Row Created" "LOFIX Row Destroyed" "LOFIX Row FollowFlowRow" "LOFIX Row FollowRow" "LOFIX Collapse"; do
+            echo "$pat: $(grep -c "$pat" trace.txt || true)"
+          done
+          echo "=== objects alive at kill time (created ids not destroyed)"
+          awk '/LOFIX Row Created/ { for (i=1;i<=NF;i++) if ($i ~ /^id=/) { split($i,a,"="); c[a[2]]=1 } }
+               /LOFIX Row Destroyed/ { for (i=1;i<=NF;i++) if ($i ~ /^id=/) { split($i,a,"="); delete c[a[2]] } }
+               END { n=0; for (k in c) n++; print "rows_alive=" n }' trace.txt
+          awk '/LOFIX Tab Created/ { for (i=1;i<=NF;i++) if ($i ~ /^id=/) { split($i,a,"="); c[a[2]]=1 } }
+               /LOFIX Tab Destroyed/ { for (i=1;i<=NF;i++) if ($i ~ /^id=/) { split($i,a,"="); delete c[a[2]] } }
+               END { n=0; for (k in c) n++; print "tabs_alive=" n }' trace.txt
+          echo "=== first/last Row Created"
+          grep 'LOFIX Row Created' trace.txt | head -5 || true
+          grep 'LOFIX Row Created' trace.txt | tail -3 || true
+          echo "=== first/last Row Destroyed"
+          grep 'LOFIX Row Destroyed' trace.txt | head -5 || true
+          grep 'LOFIX Row Destroyed' trace.txt | tail -3 || true
+          echo "=== follow-row assignments (first 12)"
+          grep 'LOFIX Row Follow' trace.txt | head -12 || true
           echo "=== first MakeAll Enter/Exit lines"
           grep 'LOFIX MakeAll Enter' trace.txt | head -5 || true
           grep 'LOFIX MakeAll Exit' trace.txt | head -5 || true
@@ -72,7 +84,7 @@ jobs:
           echo "=== iterator visits: top values per Split Exit / MakeAll Exit"
           grep 'LOFIX Split Exit' trace.txt | grep -oE 'iter=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
           grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'iter=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
-          echo "=== IsAnFollow calls: top values per Split Exit / MakeAll Exit"
+          echo "=== real IsAnFollow calls: top values per Split Exit / MakeAll Exit"
           grep 'LOFIX Split Exit' trace.txt | grep -oE 'isanfollow=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
           grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'isanfollow=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
           echo "=== peak row_live / row_peak / tab_live / tab_peak seen"
@@ -99,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: split-probe-trace-v4
+          name: split-probe-trace-v41
           path: |
             trace.txt
             out/

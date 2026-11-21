@@ -526,6 +526,15 @@ static void lcl_MoveRowContent( SwRowFrame& rSourceLine, SwRowFrame& rDestLine )
 
                     lcl_MoveRowContent( *pTmpSourceRow, *pTmpDestRow );
                     pTmpDestRow->SetFollowRow( pTmpSourceRow->GetFollowRow() );
+                    if (lofixprobe::on())
+                    {
+                        std::fprintf(stderr, "LOFIX Row FollowRow id=%ld -> %ld\n",
+                                     lofixprobe::rowIdOf(pTmpDestRow),
+                                     pTmpDestRow->GetFollowRow()
+                                         ? lofixprobe::rowIdOf(pTmpDestRow->GetFollowRow())
+                                         : 0);
+                        std::fflush(stderr);
+                    }
                     pTmpSourceRow->RemoveFromLayout();
                     SwFrame::DestroyFrame(pTmpSourceRow);
                 }
@@ -657,6 +666,22 @@ static void lcl_PreprocessRowsInCells( SwTabFrame& rTab, SwRowFrame& rLastLine,
                 pNewRow->SetFollowFlowRow( true );
                 pNewRow->SetFollowRow( pTmpLastLineRow->GetFollowRow() );
                 pTmpLastLineRow->SetFollowRow( pNewRow );
+                if (lofixprobe::on())
+                {
+                    std::fprintf(stderr, "LOFIX Row FollowFlowRow id=%ld -> 1\n",
+                                 lofixprobe::rowIdOf(pNewRow));
+                    std::fprintf(stderr, "LOFIX Row FollowRow id=%ld -> %ld\n",
+                                 lofixprobe::rowIdOf(pNewRow),
+                                 pNewRow->GetFollowRow()
+                                     ? lofixprobe::rowIdOf(pNewRow->GetFollowRow())
+                                     : 0);
+                    std::fprintf(stderr, "LOFIX Row FollowRow id=%ld -> %ld\n",
+                                 lofixprobe::rowIdOf(pTmpLastLineRow),
+                                 pTmpLastLineRow->GetFollowRow()
+                                     ? lofixprobe::rowIdOf(pTmpLastLineRow->GetFollowRow())
+                                     : 0);
+                    std::fflush(stderr);
+                }
                 pNewRow->InsertBehind( pCurrFollowFlowLineCell, nullptr );
                 pTmpLastLineRow = static_cast<SwRowFrame*>(pTmpLastLineRow->GetNext());
             }
@@ -700,6 +725,15 @@ static void lcl_PostprocessRowsInCells( SwTabFrame& rTab, SwRowFrame& rLastLine 
                 SwRowFrame* pFollowRow = pRowFrame->GetFollowRow();
                 pRowFrame->Paste( pFollowRow->GetUpper(), pFollowRow );
                 pRowFrame->SetFollowRow( pFollowRow->GetFollowRow() );
+                if (lofixprobe::on())
+                {
+                    std::fprintf(stderr, "LOFIX Row FollowRow id=%ld -> %ld\n",
+                                 lofixprobe::rowIdOf(pRowFrame),
+                                 pRowFrame->GetFollowRow()
+                                     ? lofixprobe::rowIdOf(pRowFrame->GetFollowRow())
+                                     : 0);
+                    std::fflush(stderr);
+                }
                 lcl_MoveRowContent( *pFollowRow, *pRowFrame );
                 pFollowRow->Cut();
                 SwFrame::DestroyFrame(pFollowRow);
@@ -1177,8 +1211,8 @@ bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKe
 {
     SwPageFrame* pLofixPage = FindPageFrame();
     lofixprobe::SplitScope aLofixSplitScope(
-        this, IsAnFollow(), pLofixPage ? static_cast<int>(pLofixPage->GetPhyPageNum()) : 0,
-        Upper() ? static_cast<int>(Upper()->GetType()) : -1 );
+        this, IsFollow(), pLofixPage ? static_cast<int>(pLofixPage->GetPhyPageNum()) : 0,
+        GetUpper() ? static_cast<int>(GetUpper()->GetType()) : -1 );
 
     bool bRet = true;
 
@@ -2355,7 +2389,7 @@ void SwTabFrame::MakeAll(vcl::RenderContext* pRenderContext)
 {
     SwPageFrame* pLofixPage = FindPageFrame();
     lofixprobe::MakeAllScope aLofixMakeAllScope(
-        this, IsAnFollow(), pLofixPage ? static_cast<int>(pLofixPage->GetPhyPageNum()) : 0 );
+        this, IsFollow(), pLofixPage ? static_cast<int>(pLofixPage->GetPhyPageNum()) : 0 );
 
     if ( IsJoinLocked() || StackHack::IsLocked() || StackHack::Count() > 50 )
         return;
@@ -4825,7 +4859,23 @@ SwRowFrame::SwRowFrame(const SwTableLine &rLine, SwFrame* pSib, bool bInsertCont
     , m_bForceRowSplitAllowed( false )
     , m_bIsInSplit( false )
 {
-    lofixprobe::noteRowCreated( this );
+    {
+        long nLofixRowId = lofixprobe::noteRowCreated( this );
+        if (lofixprobe::on())
+        {
+            lofixprobe::SplitScope* pLofixSplit = lofixprobe::currentSplit();
+            long nLofixOwner = GetUpper() && GetUpper()->IsTabFrame()
+                                   ? lofixprobe::tabIdFor(GetUpper())
+                                   : 0;
+            std::fprintf(stderr,
+                "LOFIX Row Created id=%ld follow_flow=%d follow_row=%ld tab=%ld split=%ld "
+                "row_live=%ld\n",
+                nLofixRowId, IsFollowFlowRow() ? 1 : 0,
+                GetFollowRow() ? lofixprobe::rowIdOf(GetFollowRow()) : 0, nLofixOwner,
+                pLofixSplit ? pLofixSplit->splitId : 0, lofixprobe::state().rowLive);
+            std::fflush(stderr);
+        }
+    }
 
     mnFrameType = SwFrameType::Row;
 
@@ -4862,7 +4912,19 @@ void SwRowFrame::DestroyImpl()
 
 SwRowFrame::~SwRowFrame()
 {
+    long nLofixRowId = lofixprobe::rowIdOf( this );
+    bool bLofixOn = lofixprobe::on();
+    bool bLofixFollowFlow = IsFollowFlowRow();
+    long nLofixFollowRow = GetFollowRow() ? lofixprobe::rowIdOf( GetFollowRow() ) : 0;
     lofixprobe::noteRowDestroyed( this );
+    if (bLofixOn)
+    {
+        std::fprintf(stderr,
+            "LOFIX Row Destroyed id=%ld follow_flow=%d follow_row=%ld row_live=%ld\n",
+            nLofixRowId, bLofixFollowFlow ? 1 : 0, nLofixFollowRow,
+            lofixprobe::state().rowLive);
+        std::fflush(stderr);
+    }
 }
 
 void SwRowFrame::RegistFlys( SwPageFrame *pPage )
@@ -5467,6 +5529,7 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
             // for its former upper.
             // Regardless of whether it will be pasted back, or destroyed, currently it's not
             // part of layout, and its height does not count
+            lofixprobe::noteIsAnFollow();
             if (pCurTab && pCurTab->IsAnFollow(pTab))
             {
                 // The found row frame belongs to a table frame that precedes
