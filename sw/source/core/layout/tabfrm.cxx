@@ -97,6 +97,7 @@ SwTabFrame::SwTabFrame( SwTable &rTab, SwFrame* pSib )
     , m_bInRecalcLowerRow(false)
 {
     mbFixSize = false;     //Don't fall for import filter again.
+    lofixprobe::noteTabCreated( this );
     mnFrameType = SwFrameType::Tab;
 
     //Create the lines and insert them.
@@ -144,6 +145,7 @@ SwTabFrame::SwTabFrame( SwTabFrame &rTab )
     , m_bInRecalcLowerRow(false)
 {
     mbFixSize = false;     //Don't fall for import filter again.
+    lofixprobe::noteTabCreated( this );
     mnFrameType = SwFrameType::Tab;
 
     SetFollow( rTab.GetFollow() );
@@ -161,6 +163,7 @@ void SwTabFrame::DestroyImpl()
 
 SwTabFrame::~SwTabFrame()
 {
+    lofixprobe::noteTabDestroyed( this );
 }
 
 void SwTabFrame::JoinAndDelFollows()
@@ -1172,7 +1175,10 @@ static SwFootnoteRescue lcl_GetFootnoteRescue(const SwRowFrame& rRow)
 bool SwTabFrame::Split(const SwTwips nCutPos, bool bTryToSplit, bool bTableRowKeep,
                        bool& rIsFootnoteGrowth, SwFootnoteRescue& rRescue)
 {
-    lofixprobe::Scope aLofixSplitScope( this );
+    SwPageFrame* pLofixPage = FindPageFrame();
+    lofixprobe::SplitScope aLofixSplitScope(
+        this, IsAnFollow(), pLofixPage ? static_cast<int>(pLofixPage->GetPhyPageNum()) : 0,
+        Upper() ? static_cast<int>(Upper()->GetType()) : -1 );
 
     bool bRet = true;
 
@@ -2347,6 +2353,10 @@ static bool IsFirstNonHeadlineRowDeleteForbidden(const SwTabFrame& rFoll)
 
 void SwTabFrame::MakeAll(vcl::RenderContext* pRenderContext)
 {
+    SwPageFrame* pLofixPage = FindPageFrame();
+    lofixprobe::MakeAllScope aLofixMakeAllScope(
+        this, IsAnFollow(), pLofixPage ? static_cast<int>(pLofixPage->GetPhyPageNum()) : 0 );
+
     if ( IsJoinLocked() || StackHack::IsLocked() || StackHack::Count() > 50 )
         return;
 
@@ -4815,7 +4825,7 @@ SwRowFrame::SwRowFrame(const SwTableLine &rLine, SwFrame* pSib, bool bInsertCont
     , m_bForceRowSplitAllowed( false )
     , m_bIsInSplit( false )
 {
-    lofixprobe::noteRowCreated();
+    lofixprobe::noteRowCreated( this );
 
     mnFrameType = SwFrameType::Row;
 
@@ -4852,7 +4862,7 @@ void SwRowFrame::DestroyImpl()
 
 SwRowFrame::~SwRowFrame()
 {
-    lofixprobe::noteRowDestroyed();
+    lofixprobe::noteRowDestroyed( this );
 }
 
 void SwRowFrame::RegistFlys( SwPageFrame *pPage )
@@ -5445,6 +5455,7 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
     SwIterator<SwRowFrame, SwFormat> aIter(*pLine->GetFrameFormat());
     for (const SwRowFrame* pCurRow = aIter.First(); pCurRow; pCurRow = aIter.Next())
     {
+        lofixprobe::noteIteratorVisit();
         if (pCurRow != &rRow && pCurRow->GetTabLine() == pLine)
         {
             // We've found another row frame that is part of the same table row

@@ -1,4 +1,4 @@
-name: sw split-scope probe v3 (source counters, no fix applied)
+name: sw probe v4 (MakeAll vs Split, instance ids, iterator cost; no fix applied)
 
 on:
   push:
@@ -37,10 +37,10 @@ jobs:
             --disable-firebird-sdbc --disable-extensions --disable-opencl \
             --disable-scripting --with-parallelism=$(nproc)
 
-      - name: Full build (upstream + v3 split-scope probe, no fix)
+      - name: Full build (upstream + v4 probe, no fix)
         run: make -j$(nproc)
 
-      - name: Run conversion with split-scope counters
+      - name: Run conversion with v4 counters
         run: |
           mkdir -p out
           set +e
@@ -49,22 +49,47 @@ jobs:
           set -e
           echo "conversion rc=$rc (124=timeout)"
           wc -l trace.txt
-          echo "--- Split Enter count: $(grep -c 'LOFIX Split Enter' trace.txt || true)"
-          echo "--- Split Exit count:  $(grep -c 'LOFIX Split Exit' trace.txt || true)"
-          echo "--- first Enter lines:"
-          grep 'LOFIX Split Enter' trace.txt | head -5 || true
-          echo "--- first Exit lines:"
-          grep 'LOFIX Split Exit' trace.txt | head -5 || true
-          echo "--- last Exit line (final counters, incl. row_live):"
-          grep 'LOFIX Split Exit' trace.txt | tail -1 || true
-          echo "--- Split Progress (a single Split scope crossing 10k shrinks):"
-          grep 'LOFIX Split Progress' trace.txt | head -30 || true
-          echo "--- Collapse recursion lines:"
-          grep 'LOFIX Collapse' trace.txt | head -10 || true
-          echo "--- peak row_live seen in Enter/Exit lines:"
+          echo "=== counts"
+          echo "MakeAll Enter: $(grep -c 'LOFIX MakeAll Enter' trace.txt || true)"
+          echo "MakeAll Exit:  $(grep -c 'LOFIX MakeAll Exit' trace.txt || true)"
+          echo "Split Enter:   $(grep -c 'LOFIX Split Enter' trace.txt || true)"
+          echo "Split Exit:    $(grep -c 'LOFIX Split Exit' trace.txt || true)"
+          echo "Row Destroyed: $(grep -c 'LOFIX Row Destroyed' trace.txt || true)"
+          echo "Collapse:      $(grep -c 'LOFIX Collapse' trace.txt || true)"
+          echo "=== first MakeAll Enter/Exit lines"
+          grep 'LOFIX MakeAll Enter' trace.txt | head -5 || true
+          grep 'LOFIX MakeAll Exit' trace.txt | head -5 || true
+          echo "=== last MakeAll Exit line"
+          grep 'LOFIX MakeAll Exit' trace.txt | tail -1 || true
+          echo "=== MakeAll Exit lines with split_calls>0, top 10 by split_calls"
+          grep 'LOFIX MakeAll Exit' trace.txt | awk '{for(i=1;i<=NF;i++){if($i~/^split_calls=/){split($i,a,"=");if(a[2]+0>0)print a[2],$0}}}' | sort -rn | head -10 || true
+          echo "=== distribution of split_calls over all MakeAll exits (value:count)"
+          grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'split_calls=[0-9]+' | cut -d= -f2 | sort -n | uniq -c | sort -rn | head -20 || true
+          echo "=== distribution of row_created per MakeAll exit (value:count)"
+          grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'row_created=[0-9]+' | cut -d= -f2 | sort -n | uniq -c | sort -rn | head -20 || true
+          echo "=== distribution of tab_created per MakeAll exit (value:count)"
+          grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'tab_created=[0-9]+' | cut -d= -f2 | sort -n | uniq -c | sort -rn | head -20 || true
+          echo "=== iterator visits: top values per Split Exit / MakeAll Exit"
+          grep 'LOFIX Split Exit' trace.txt | grep -oE 'iter=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
+          grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'iter=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
+          echo "=== IsAnFollow calls: top values per Split Exit / MakeAll Exit"
+          grep 'LOFIX Split Exit' trace.txt | grep -oE 'isanfollow=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
+          grep 'LOFIX MakeAll Exit' trace.txt | grep -oE 'isanfollow=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
+          echo "=== peak row_live / row_peak / tab_live / tab_peak seen"
           grep -oE 'row_live=[0-9]+' trace.txt | cut -d= -f2 | sort -n | tail -1 || true
-          echo "--- tail:"
+          grep -oE 'row_peak=[0-9]+' trace.txt | cut -d= -f2 | sort -n | tail -1 || true
+          grep -oE 'tab_live=[0-9]+' trace.txt | cut -d= -f2 | sort -n | tail -1 || true
+          grep -oE 'tab_peak=[0-9]+' trace.txt | cut -d= -f2 | sort -n | tail -1 || true
+          echo "=== first Split Enter lines"
+          grep 'LOFIX Split Enter' trace.txt | head -5 || true
+          echo "=== last Split Exit line"
+          grep 'LOFIX Split Exit' trace.txt | tail -1 || true
+          echo "=== tail"
           tail -20 trace.txt || true
+          if ! grep -q 'LOFIX MakeAll Enter' trace.txt; then
+            echo "::error::probe never entered MakeAll - do not read this as evidence"
+            exit 1
+          fi
           if ! grep -q 'LOFIX Split Enter' trace.txt; then
             echo "::error::probe never entered Split - do not read this as evidence of no loop"
             exit 1
@@ -74,7 +99,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: split-probe-trace
+          name: split-probe-trace-v4
           path: |
             trace.txt
             out/
