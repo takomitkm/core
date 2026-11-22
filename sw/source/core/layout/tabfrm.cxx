@@ -70,6 +70,8 @@
 #include <ndtxt.hxx>
 #include <frameformats.hxx>
 
+#include <unordered_set>
+
 using namespace ::com::sun::star;
 
 SwTabFrame::SwTabFrame( SwTable &rTab, SwFrame* pSib )
@@ -5428,6 +5430,19 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
     const SwTabFrame* pTab = rRow.FindTabFrame();
     if (!pLine || !pTab || !pTab->IsFollow())
         return 0;
+    // IsAnFollow() walks the GetFollow() chain once per candidate row frame,
+    // and that chain grows with every follow table that gets created, so the
+    // accumulated cost of this function is quadratic in the number of pages
+    // the table spans. SetFollow() keeps m_pFollow and m_pPrecede in sync,
+    // so the precede chain is the exact reverse of the follow chain: collect
+    // the preceding flow frames once and check membership instead. Storing
+    // SwFlowFrame pointers keeps the comparison at the same level as
+    // IsAnFollow(), without assuming every node in the chain is a SwTabFrame.
+    // pTab itself stays in the set, so that IsAnFollow() returning true for
+    // pAssumed == this is preserved.
+    std::unordered_set<const SwFlowFrame*> aPrecedingFlows;
+    for (const SwFlowFrame* pFlow = pTab; pFlow; pFlow = pFlow->GetPrecede())
+        aPrecedingFlows.insert(pFlow);
     SwTwips nResult = 0;
     SwIterator<SwRowFrame, SwFormat> aIter(*pLine->GetFrameFormat());
     for (const SwRowFrame* pCurRow = aIter.First(); pCurRow; pCurRow = aIter.Next())
@@ -5443,7 +5458,7 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
             // for its former upper.
             // Regardless of whether it will be pasted back, or destroyed, currently it's not
             // part of layout, and its height does not count
-            if (pCurTab && pCurTab->IsAnFollow(pTab))
+            if (pCurTab && aPrecedingFlows.count(pCurTab))
             {
                 // The found row frame belongs to a table frame that precedes
                 // (above) this one in chain. So, include it in the sum
