@@ -1,0 +1,60 @@
+name: sw precede-set fix CI
+
+on:
+  push:
+    branches:
+      - fix/isanfollow-precede-set
+  workflow_dispatch:
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+
+      - name: Enable deb-src and install build dependencies
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get build-dep -y libreoffice
+          sudo apt-get install -y ccache gperf flex bison pkg-config libxml2-utils fonts-noto-cjk fonts-liberation
+
+      - name: Prepare ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: sw-isanfollow-Linux
+          max-size: 4G
+
+      - name: Configure
+        run: |
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          ./autogen.sh --disable-gui --without-java --disable-python --disable-odk \
+            --without-doxygen --disable-report-builder \
+            --disable-gstreamer-1-0 --without-myspell-dicts --disable-lotuswordpro \
+            --disable-firebird-sdbc --disable-extensions --disable-opencl \
+            --disable-scripting --with-parallelism=$(nproc)
+
+      - name: Build with the precede-set change
+        run: make -j$(nproc)
+
+      - name: Conversion must succeed and stay fast
+        run: |
+          mkdir -p out
+          timeout -k 15 300 /usr/bin/time -f 'conversion_wall=%es maxrss=%MKB' \
+            instdir/program/soffice --headless --convert-to pdf \
+            --outdir out sw/qa/core/layout/data/oversized-as-char-fly-grid.docx
+          test -f out/oversized-as-char-fly-grid.pdf
+          echo "pdf bytes: $(stat -c %s out/oversized-as-char-fly-grid.pdf)"
+
+      - name: Run sw_core_layout test suite
+        run: make CppunitTest_sw_core_layout
+
+      - name: Upload conversion output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isanfollow-conversion
+          path: out/
