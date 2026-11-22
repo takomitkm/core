@@ -3523,7 +3523,47 @@ bool SwTextFrame::WouldFit(SwTwips &rMaxHeight, bool &bSplit, bool bTst, bool bM
     // can *not* be applied, if test format is in progress. The test format doesn't
     // adjust the frame and the printing area - see method <SwTextFrame::Format_(..)>,
     // which is called in <SwTextFrame::TestFormat(..)>
-    if ( IsEmpty() && !bTst )
+    // A paragraph that consists only of as-char flys (no text) cannot be
+    // split: there is no text line that could move to a follow. Give it the
+    // same unsplittable short-cut as the empty-paragraph case below: either it
+    // fits completely into the available height, or it does not fit and no
+    // split is offered. This avoids a non-converging layout observed with an
+    // oversized as-character image in a table cell; the underlying interaction
+    // between MakeAll(), MoveFwd() and MoveBwd() is not established here.
+    if (!bTst)
+    {
+        // CH_TXTATR_BREAKWORD is shared by several hint types (field, fly
+        // anchor, footnote, meta, content control), so the dummy character
+        // alone does not identify a fly. Narrow explicitly to a paragraph
+        // whose only content is one as-character fly.
+        bool bOnlyOneFly = false;
+        const OUString& rFrameText = GetText();
+        if (rFrameText.getLength() == 1 && rFrameText[0] == CH_TXTATR_BREAKWORD)
+        {
+            // For merged paragraphs GetText() is a concatenation of several
+            // nodes, so map the view position back to the model first.
+            std::pair<SwTextNode*, sal_Int32> const aPos(MapViewToModel(TextFrameIndex(0)));
+            if (aPos.first)
+            {
+                SwTextAttr* pAttr =
+                    aPos.first->GetTextAttrForCharAt(aPos.second, RES_TXTATR_FLYCNT);
+                bOnlyOneFly = nullptr != pAttr;
+            }
+        }
+        if (bOnlyOneFly)
+        {
+            bSplit = false;
+            SwTwips nHeight = aRectFnSet.IsVert()
+                ? getFramePrintArea().SSize().Width()
+                : getFramePrintArea().SSize().Height();
+            if (rMaxHeight < nHeight)
+                return false;
+            rMaxHeight -= nHeight;
+            return true;
+        }
+    }
+
+    if( IsEmpty() && !bTst )
     {
         bSplit = false;
         SwTwips nHeight = aRectFnSet.IsVert() ? getFramePrintArea().SSize().Width() : getFramePrintArea().SSize().Height();
