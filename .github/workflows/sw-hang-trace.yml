@@ -1,4 +1,4 @@
-name: sw probe v4.2 (Split decision branch, WouldFit, IsAnFollow chain)
+name: sw probe v4.3 (Split decision branch, WouldFit, precede set)
 
 on:
   push:
@@ -37,10 +37,10 @@ jobs:
             --disable-firebird-sdbc --disable-extensions --disable-opencl \
             --disable-scripting --with-parallelism=$(nproc)
 
-      - name: Full build (upstream + v4.2 probe, no fix)
+      - name: Full build (upstream + v4.3 probe, no fix)
         run: make -j$(nproc)
 
-      - name: Run conversion with v4.2 decision counters
+      - name: Run conversion with v4.3 precede-set counters
         run: |
           mkdir -p out
           set +e
@@ -103,6 +103,20 @@ jobs:
           grep 'LOFIX Split Exit' trace.txt | grep -oE 'iter=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
           awk '/LOFIX Split Exit/ { for (i=1;i<=NF;i++) if ($i ~ /^iter=/) { split($i,a,"="); s+=a[2] } }
                END { print "split_iter_sum=" s }' trace.txt
+          echo "=== precede set: totals over Split exits (v4.3 replacement work)"
+          awk '/LOFIX Split Exit/ { for (i=1;i<=NF;i++) {
+                   if ($i ~ /^rowh=/) { split($i,a,"="); calls+=a[2] }
+                   if ($i ~ /^precede=/) { split($i,a,"="); steps+=a[2] }
+                   if ($i ~ /^lookups=/) { split($i,a,"="); lk+=a[2] }
+                   if ($i ~ /^hits=/) { split($i,a,"="); ht+=a[2] }
+                 } }
+               END { print "rowh_calls=" calls " precede_steps=" steps " lookups=" lk " hits=" ht }' trace.txt
+          echo "=== precede set: per-Split max precede steps / lookups"
+          grep 'LOFIX Split Exit' trace.txt | grep -oE 'precede=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
+          grep 'LOFIX Split Exit' trace.txt | grep -oE 'lookups=[0-9]+' | cut -d= -f2 | sort -n | tail -3 || true
+          echo "=== precede set: hits must equal v4.2 isanfollow_true (semantic check)"
+          echo "=== progress rate in the same 180 s window"
+          echo "split_exits=$(grep -c 'LOFIX Split Exit' trace.txt || true) tab_created=$(grep -c 'LOFIX Tab Created' trace.txt || true) row_created=$(grep -c 'LOFIX Row Created' trace.txt || true)"
           echo "=== life cycle at kill time"
           awk '/LOFIX Row Created/ { for (i=1;i<=NF;i++) if ($i ~ /^id=/) { split($i,a,"="); c[a[2]]=1 } }
                /LOFIX Row Destroyed/ { for (i=1;i<=NF;i++) if ($i ~ /^id=/) { split($i,a,"="); delete c[a[2]] } }
@@ -130,7 +144,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: split-probe-trace-v42
+          name: split-probe-trace-v43
           path: |
             trace.txt
             out/

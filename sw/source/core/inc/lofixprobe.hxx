@@ -1,9 +1,19 @@
-/* LOFIX PROBE ONLY - NOT FOR UPSTREAM. v4.2.
+/* LOFIX PROBE ONLY - NOT FOR UPSTREAM. v4.3.
  *
  * Diagnostic instrumentation for the non-converging Writer table layout
  * observed with an oversized as-character image in a table cell.
  *
  * Enabled at runtime via LOFIX_TRACE_SPLIT.
+ *
+ * v4.3 = v4.2 counters plus the precede-set experiment:
+ *   - lcl_calcHeightOfRowBeforeThisFrame() no longer calls IsAnFollow() per
+ *     candidate row; it builds a set from pTab's GetPrecede() chain once and
+ *     checks membership. New counters record how much work that replacement
+ *     actually does: one count per function call that builds the set, one per
+ *     GetPrecede() hop, and one per set lookup plus hits. rowh/precede/
+ *     lookups/hits are printed on the Split Exit and MakeAll Exit lines so the
+ *     new cost can be compared with the v4.2 IsAnFollow numbers on the same
+ *     fixture and timeout.
  *
  * v4.2 = v4.1 counters plus the decision-point data:
  *   - SwTextFrame::WouldFit logs, for the fly-only paragraph only, the input
@@ -65,6 +75,11 @@ struct State
     long anFollowTrueTotal = 0;
     int anFollowTraceDepth = 0;
 
+    long heightRowCallsTotal = 0;
+    long precedeStepsTotal = 0;
+    long setLookupsTotal = 0;
+    long setHitsTotal = 0;
+
     std::unordered_map<void const*, long> tabIds;
     std::unordered_map<void const*, long> rowIds;
     std::unordered_map<void const*, long> textIds;
@@ -93,6 +108,10 @@ struct MakeAllScope
     long isAnFollowSteps = 0;
     long maxIsAnFollowSteps = 0;
     long isAnFollowTrue = 0;
+    long heightRowCalls = 0;
+    long precedeSteps = 0;
+    long setLookups = 0;
+    long setHits = 0;
     long rowCreatedAtEnter = 0;
     long rowDestroyedAtEnter = 0;
     long tabCreatedAtEnter = 0;
@@ -121,6 +140,10 @@ struct SplitScope
     long isAnFollowSteps = 0;
     long maxIsAnFollowSteps = 0;
     long isAnFollowTrue = 0;
+    long heightRowCalls = 0;
+    long precedeSteps = 0;
+    long setLookups = 0;
+    long setHits = 0;
     int maxShrinkDepth = 0;
     int maxCollapseDepth = 0;
     long rowCreated = 0;
@@ -314,10 +337,12 @@ inline SplitScope::~SplitScope()
         "LOFIX Split Exit id=%ld tab_id=%ld makeall=%ld shrink_incl=%ld shrink_excl=%ld "
         "iter=%ld isanfollow=%ld isanfollow_steps=%ld max_isanfollow_steps=%ld "
         "isanfollow_true=%ld max_shrink_depth=%d max_collapse_depth=%d row_created=%ld "
-        "row_live=%ld row_peak=%ld tab_live=%ld tab_peak=%ld\n",
+        "row_live=%ld row_peak=%ld tab_live=%ld tab_peak=%ld "
+        "rowh=%ld precede=%ld lookups=%ld hits=%ld\n",
         splitId, tabId, makeAllId, shrinkInclusive, shrinkExclusive, iteratorVisits,
         isAnFollowCalls, isAnFollowSteps, maxIsAnFollowSteps, isAnFollowTrue, maxShrinkDepth,
-        maxCollapseDepth, rowCreated, rS.rowLive, rS.rowPeakLive, rS.tabLive, rS.tabPeakLive);
+        maxCollapseDepth, rowCreated, rS.rowLive, rS.rowPeakLive, rS.tabLive, rS.tabPeakLive,
+        heightRowCalls, precedeSteps, setLookups, setHits);
     std::fflush(stderr);
     if (!rS.splitStack.empty() && rS.splitStack.back() == this)
         rS.splitStack.pop_back();
@@ -352,12 +377,13 @@ inline MakeAllScope::~MakeAllScope()
         "LOFIX MakeAll Exit id=%ld tab_id=%ld split_calls=%ld iter=%ld isanfollow=%ld "
         "isanfollow_steps=%ld max_isanfollow_steps=%ld isanfollow_true=%ld "
         "row_created=%ld row_destroyed=%ld tab_created=%ld tab_destroyed=%ld "
-        "row_live=%ld row_peak=%ld tab_live=%ld tab_peak=%ld\n",
+        "row_live=%ld row_peak=%ld tab_live=%ld tab_peak=%ld "
+        "rowh=%ld precede=%ld lookups=%ld hits=%ld\n",
         makeAllId, tabId, splitCalls, iteratorVisits, isAnFollowCalls, isAnFollowSteps,
         maxIsAnFollowSteps, isAnFollowTrue, rS.rowCreated - rowCreatedAtEnter,
         rS.rowDestroyed - rowDestroyedAtEnter, rS.tabCreated - tabCreatedAtEnter,
         rS.tabDestroyed - tabDestroyedAtEnter, rS.rowLive, rS.rowPeakLive, rS.tabLive,
-        rS.tabPeakLive);
+        rS.tabPeakLive, heightRowCalls, precedeSteps, setLookups, setHits);
     std::fflush(stderr);
     if (!rS.makeAllStack.empty() && rS.makeAllStack.back() == this)
         rS.makeAllStack.pop_back();
@@ -449,6 +475,55 @@ inline void noteIsAnFollowWalk(long nSteps, bool bFound)
         p->isAnFollowSteps += nSteps;
         p->isAnFollowTrue += bFound ? 1 : 0;
         p->maxIsAnFollowSteps = std::max(p->maxIsAnFollowSteps, nSteps);
+    }
+}
+
+/// One lcl_calcHeightOfRowBeforeThisFrame() call that builds the precede set.
+inline void noteHeightRowCall()
+{
+    State& rS = state();
+    if (!rS.enabled)
+        return;
+    ++rS.heightRowCallsTotal;
+    if (SplitScope* p = currentSplit())
+        ++p->heightRowCalls;
+    if (MakeAllScope* p = currentMakeAll())
+        ++p->heightRowCalls;
+}
+
+/// One GetPrecede() hop while building the precede set.
+inline void notePrecedeStep()
+{
+    State& rS = state();
+    if (!rS.enabled)
+        return;
+    ++rS.precedeStepsTotal;
+    if (SplitScope* p = currentSplit())
+        ++p->precedeSteps;
+    if (MakeAllScope* p = currentMakeAll())
+        ++p->precedeSteps;
+}
+
+/// One set-membership lookup replacing IsAnFollow(); bHit is its result.
+inline void noteSetLookup(bool bHit)
+{
+    State& rS = state();
+    if (!rS.enabled)
+        return;
+    ++rS.setLookupsTotal;
+    if (bHit)
+        ++rS.setHitsTotal;
+    if (SplitScope* p = currentSplit())
+    {
+        ++p->setLookups;
+        if (bHit)
+            ++p->setHits;
+    }
+    if (MakeAllScope* p = currentMakeAll())
+    {
+        ++p->setLookups;
+        if (bHit)
+            ++p->setHits;
     }
 }
 

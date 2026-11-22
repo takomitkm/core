@@ -75,6 +75,8 @@
 #include <ndtxt.hxx>
 #include <frameformats.hxx>
 
+#include <unordered_set>
+
 using namespace ::com::sun::star;
 
 SwTabFrame::SwTabFrame( SwTable &rTab, SwFrame* pSib )
@@ -5631,6 +5633,18 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
     const SwTabFrame* pTab = rRow.FindTabFrame();
     if (!pLine || !pTab || !pTab->IsFollow())
         return 0;
+    // v4.3: replace the per-candidate IsAnFollow() walk with one precede set.
+    // The precede chain is the exact reverse of the follow chain (SetFollow()
+    // keeps both sides in sync), so membership answers the same question with
+    // O(T) chain hops once instead of O(R*T). pTab itself is in the set to
+    // keep IsAnFollow(this) == true semantics.
+    lofixprobe::noteHeightRowCall();
+    std::unordered_set<const SwFlowFrame*> aPrecedingFlows;
+    for (const SwFlowFrame* pFlow = pTab; pFlow; pFlow = pFlow->GetPrecede())
+    {
+        lofixprobe::notePrecedeStep();
+        aPrecedingFlows.insert(pFlow);
+    }
     SwTwips nResult = 0;
     SwIterator<SwRowFrame, SwFormat> aIter(*pLine->GetFrameFormat());
     for (const SwRowFrame* pCurRow = aIter.First(); pCurRow; pCurRow = aIter.Next())
@@ -5649,9 +5663,9 @@ static SwTwips lcl_calcHeightOfRowBeforeThisFrame(const SwRowFrame& rRow)
             // part of layout, and its height does not count
             if (pCurTab)
             {
-                lofixprobe::noteIsAnFollow();
-                lofixprobe::IsAnFollowTraceScope aLofixAnFollowTrace;
-                if (pCurTab->IsAnFollow(pTab))
+                const bool bPrecedes = 0 != aPrecedingFlows.count(pCurTab);
+                lofixprobe::noteSetLookup(bPrecedes);
+                if (bPrecedes)
                 {
                     // The found row frame belongs to a table frame that precedes
                     // (above) this one in chain. So, include it in the sum
