@@ -46,6 +46,21 @@ jobs:
             --disable-firebird-sdbc --disable-extensions --disable-opencl \
             --disable-scripting --with-parallelism=$(nproc)
 
+      - name: Fetch external tarballs (retry)
+        run: |
+          ok=0
+          for i in 1 2 3 4 5; do
+            if make fetch; then
+              echo "fetch ok on attempt $i"
+              ok=1
+              break
+            fi
+            echo "fetch failed on attempt $i, retrying"
+            sleep 30
+          done
+          test "$ok" = 1
+          test -f workdir/download
+
       - name: Baseline A only (B reverted)
         run: |
           git show a418b99:sw/source/core/layout/tabfrm.cxx > sw/source/core/layout/tabfrm.cxx
