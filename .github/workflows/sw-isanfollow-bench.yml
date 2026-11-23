@@ -33,6 +33,7 @@ jobs:
         run: |
           git fetch --depth=1 origin gerrit/asanfly
           git show FETCH_HEAD:sw/source/core/text/txtfrm.cxx > sw/source/core/text/txtfrm.cxx
+          git show FETCH_HEAD:sw/qa/core/layout/layout.cxx > sw/qa/core/layout/layout.cxx
           git show FETCH_HEAD:sw/qa/core/layout/data/oversized-as-char-fly-grid.docx > sw/qa/core/layout/data/oversized-as-char-fly-grid.docx
           git show FETCH_HEAD:sw/qa/core/layout/data/fit-as-char-fly-grid.docx > sw/qa/core/layout/data/fit-as-char-fly-grid.docx
 
@@ -69,6 +70,9 @@ jobs:
       - name: Convert with A only
         run: bash ci/run_bench.sh a1
 
+      - name: Run sw_core_layout suite with A only
+        run: make CppunitTest_sw_core_layout
+
       - name: Apply B and rebuild sw
         run: |
           git show HEAD:sw/source/core/layout/tabfrm.cxx > sw/source/core/layout/tabfrm.cxx
@@ -76,6 +80,9 @@ jobs:
 
       - name: Convert with A and B
         run: bash ci/run_bench.sh ab
+
+      - name: Run sw_core_layout suite with A and B
+        run: make CppunitTest_sw_core_layout
 
       - name: Compare pages and layout text
         run: |
