@@ -1,0 +1,77 @@
+name: sw precede-set benchmark (A-only vs A+B)
+
+on:
+  push:
+    branches:
+      - ci/isanfollow-bench
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - name: Checkout bench branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+
+      - name: Install build dependencies
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get build-dep -y libreoffice
+          sudo apt-get install -y ccache gperf flex bison pkg-config libxml2-utils poppler-utils
+
+      - name: Prepare ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: sw-wouldfit-Linux
+          max-size: 4G
+
+      - name: Take the fix (A) and its fixtures from gerrit/asanfly
+        run: |
+          git fetch --depth=1 origin gerrit/asanfly
+          git show FETCH_HEAD:sw/source/core/text/txtfrm.cxx > sw/source/core/text/txtfrm.cxx
+          git show FETCH_HEAD:sw/qa/core/layout/data/oversized-as-char-fly-grid.docx > sw/qa/core/layout/data/oversized-as-char-fly-grid.docx
+          git show FETCH_HEAD:sw/qa/core/layout/data/fit-as-char-fly-grid.docx > sw/qa/core/layout/data/fit-as-char-fly-grid.docx
+
+      - name: Configure
+        run: |
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          ./autogen.sh --disable-gui --without-java --disable-python --disable-odk \
+            --without-doxygen --disable-report-builder \
+            --disable-gstreamer-1-0 --without-myspell-dicts --disable-lotuswordpro \
+            --disable-firebird-sdbc --disable-extensions --disable-opencl \
+            --disable-scripting --with-parallelism=$(nproc)
+
+      - name: Baseline A only (B reverted)
+        run: |
+          git show a418b99:sw/source/core/layout/tabfrm.cxx > sw/source/core/layout/tabfrm.cxx
+          make -j$(nproc)
+
+      - name: Convert with A only
+        run: bash ci/run_bench.sh a1
+
+      - name: Apply B and rebuild sw
+        run: |
+          git show HEAD:sw/source/core/layout/tabfrm.cxx > sw/source/core/layout/tabfrm.cxx
+          make sw -j$(nproc)
+
+      - name: Convert with A and B
+        run: bash ci/run_bench.sh ab
+
+      - name: Compare pages and layout text
+        run: |
+          python3 ci/bench_compare.py --a a1 --b ab \
+            --docs oversized-as-char-fly-grid fit-as-char-fly-grid bench-short-row bench-long-row
+
+      - name: Upload benchmark outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isanfollow-bench
+          path: |
+            a1/
+            ab/
