@@ -73,8 +73,11 @@ jobs:
       - name: Run sw_core_layout suite with A only
         run: make CppunitTest_sw_core_layout
 
-      - name: Run historical as-char fly regression suite with A only
-        run: make CppunitTest_sw_layoutwriter4
+      - name: Run historical as-char fly regressions with A only
+        run: |
+          make CppunitTest_sw_layoutwriter4 CPPUNIT_TEST_NAME=test_i84870
+          make CppunitTest_sw_layoutwriter4 CPPUNIT_TEST_NAME=testTdf160549
+          make CppunitTest_sw_layoutwriter4 CPPUNIT_TEST_NAME=testTdf160526
 
       - name: Apply B and rebuild sw
         run: |
@@ -87,8 +90,11 @@ jobs:
       - name: Run sw_core_layout suite with A and B
         run: make CppunitTest_sw_core_layout
 
-      - name: Run historical as-char fly regression suite with A and B
-        run: make CppunitTest_sw_layoutwriter4
+      - name: Run historical as-char fly regressions with A and B
+        run: |
+          make CppunitTest_sw_layoutwriter4 CPPUNIT_TEST_NAME=test_i84870
+          make CppunitTest_sw_layoutwriter4 CPPUNIT_TEST_NAME=testTdf160549
+          make CppunitTest_sw_layoutwriter4 CPPUNIT_TEST_NAME=testTdf160526
 
       - name: Compare pages and layout text
         run: |
