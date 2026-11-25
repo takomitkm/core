@@ -33,9 +33,10 @@ jobs:
         run: |
           git fetch --depth=1 origin gerrit/asanfly
           git show FETCH_HEAD:sw/source/core/text/txtfrm.cxx > sw/source/core/text/txtfrm.cxx
-          git show FETCH_HEAD:sw/qa/core/layout/layout.cxx > sw/qa/core/layout/layout.cxx
           git show FETCH_HEAD:sw/qa/core/layout/data/oversized-as-char-fly-grid.docx > sw/qa/core/layout/data/oversized-as-char-fly-grid.docx
           git show FETCH_HEAD:sw/qa/core/layout/data/fit-as-char-fly-grid.docx > sw/qa/core/layout/data/fit-as-char-fly-grid.docx
+          # layout.cxx on this branch already contains A's two tests plus two
+          # fork-only boundary tests; do not overwrite it from gerrit/asanfly.
 
       - name: Configure
         run: |

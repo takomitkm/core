@@ -1032,6 +1032,82 @@ CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testNewFollowTextFlowWrapInBackground)
     CPPUNIT_ASSERT_LESS(static_cast<sal_Int32>(1000), nCellHeight);
 }
 
+CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testOversizedAsCharFlyGridNoHang)
+{
+    // The document has a paragraph that consists only of an as-char fly that
+    // is taller than the text body (docGrid lines + footer). Without the
+    // accompanying fix, WouldFit() kept promising a split for this
+    // unsplittable paragraph and layout never converged (100% CPU, hang).
+    // Loading the document must terminate.
+    createSwDoc("oversized-as-char-fly-grid.docx");
+    // The fly overflows the body area of its page; the document still lays
+    // out to its normal page count of four. The upper bound catches a layout
+    // that terminates but keeps paginating: the un-fixed code created
+    // thousands of pages before the timeout, and a finite but extreme growth
+    // has to fail here as well. Some headroom is left for font metric
+    // differences between platforms.
+    CPPUNIT_ASSERT_GREATEREQUAL(1, static_cast<int>(getPages()));
+    CPPUNIT_ASSERT_LESS(10, static_cast<int>(getPages()));
+}
+
+CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testFittingAsCharFlyGridPrintArea)
+{
+    // Same shape as testOversizedAsCharFlyGridNoHang, but the fly fits the
+    // text body. This pins what the fitting branch of the WouldFit()
+    // short-cut relies on: the paragraph's print area is valid and at least
+    // as tall as the image, with the line snapped by docGrid, and the
+    // following paragraph starts below the fly rather than overlapping it.
+    createSwDoc("fit-as-char-fly-grid.docx");
+    CPPUNIT_ASSERT_EQUAL(1, static_cast<int>(getPages()));
+
+    xmlDocUniquePtr pXmlDoc = parseLayoutDump();
+    // The image is 4535 twips tall; docGrid lines snap the line to at least
+    // that height, so a stale or zero print area would fail here.
+    sal_Int32 nFlyPrintHeight
+        = getXPath(pXmlDoc, "//cell[1]/txt[1]/infos/prtBounds", "height").toInt32();
+    CPPUNIT_ASSERT_GREATEREQUAL(static_cast<sal_Int32>(4535), nFlyPrintHeight);
+    assertXPath(pXmlDoc, "//cell[1]/txt[1]/infos/bounds", "mbFramePrintAreaValid", u"true");
+
+    sal_Int32 nFlyTop = getXPath(pXmlDoc, "//cell[1]/txt[1]/infos/bounds", "top").toInt32();
+    sal_Int32 nFlyHeight
+        = getXPath(pXmlDoc, "//cell[1]/txt[1]/infos/bounds", "height").toInt32();
+    sal_Int32 nFollowingTop
+        = getXPath(pXmlDoc, "//cell[1]/txt[2]/infos/bounds", "top").toInt32();
+    CPPUNIT_ASSERT_GREATEREQUAL(nFlyTop + nFlyHeight, nFollowingTop);
+}
+
+// Fork-only boundary checks for the oversized-as-char-fly WouldFit() short-cut.
+// Not part of the upstream change; these only verify that the narrow
+// RES_TXTATR_FLYCNT check does not disturb other content shapes.
+CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testMulticolAsCharFlyStaysInColumn)
+{
+    // A large as-char fly in a two-column layout must stay inside a column;
+    // FormatAdjust() deliberately keeps splitting in columns (FindColFrame()
+    // exception). The layout has to terminate with a bounded page count.
+    createSwDoc("multicol-as-char-fly.docx");
+    CPPUNIT_ASSERT_GREATEREQUAL(1, static_cast<int>(getPages()));
+    CPPUNIT_ASSERT_LESS(10, static_cast<int>(getPages()));
+    xmlDocUniquePtr pXmlDoc = parseLayoutDump();
+    CPPUNIT_ASSERT(pXmlDoc);
+    // The fly is the only drawing object on the page and must be anchored
+    // inside a column (FormatAdjust() keeps splitting in columns).
+    assertXPath(pXmlDoc, "//page[1]//column//txt//anchored/SwAnchoredDrawObject", 1);
+}
+
+CPPUNIT_TEST_FIXTURE(SwCoreLayoutTest, testDummyCharIsNotMistakenForFly)
+{
+    // A paragraph containing only a PAGE field or a footnote reference has the
+    // same CH_TXTATR_BREAKWORD dummy character as an as-char fly. The fix must
+    // not apply its unsplittable short-cut: layout terminates normally, and
+    // the field / footnote marker is still laid out.
+    createSwDoc("dummy-as-char.docx");
+    CPPUNIT_ASSERT_GREATEREQUAL(1, static_cast<int>(getPages()));
+    CPPUNIT_ASSERT_LESS(10, static_cast<int>(getPages()));
+    xmlDocUniquePtr pXmlDoc = parseLayoutDump();
+    CPPUNIT_ASSERT(pXmlDoc);
+    assertXPath(pXmlDoc, "//ftn", 1);
+}
+
 CPPUNIT_PLUGIN_IMPLEMENT();
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
