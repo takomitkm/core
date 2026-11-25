@@ -73,6 +73,9 @@ jobs:
       - name: Run sw_core_layout suite with A only
         run: make CppunitTest_sw_core_layout
 
+      - name: Run historical as-char fly regression suite with A only
+        run: make CppunitTest_sw_layoutwriter4
+
       - name: Apply B and rebuild sw
         run: |
           git show HEAD:sw/source/core/layout/tabfrm.cxx > sw/source/core/layout/tabfrm.cxx
@@ -83,6 +86,9 @@ jobs:
 
       - name: Run sw_core_layout suite with A and B
         run: make CppunitTest_sw_core_layout
+
+      - name: Run historical as-char fly regression suite with A and B
+        run: make CppunitTest_sw_layoutwriter4
 
       - name: Compare pages and layout text
         run: |
